@@ -1,43 +1,52 @@
-import io, os
-import requests
+"""
+Backend (api-visao) — remoção de fundo de imagem com rembg.
+
+Segue o mesmo padrão do par api-visao / gradio-visao do repositório modelo
+da disciplina: recebe a imagem via REST (multipart/form-data) na rota
+/analisar e devolve o resultado processado.
+
+Modelo: u2netp (rembg), um modelo de terceiros pronto, leve (~4,6 MB),
+baixado automaticamente do GitHub na primeira execução e cacheado no
+container. Não precisa de treino nem de hospedar pesos grandes.
+"""
+
+import io
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from PIL import Image
-from transformers import pipeline
+from fastapi.responses import Response
+from PIL import Image, UnidentifiedImageError
+from rembg import new_session, remove
 
-MODELO = os.getenv("MODELO_VISAO", "google/vit-base-patch16-224")
-ARMAZENAMENTO_URL = os.getenv("ARMAZENAMENTO_URL", "http://armazenamento-service:8082")
+app = FastAPI(title="api-visao — Remoção de Fundo")
 
-app = FastAPI(title="Serviço de Visão")
+# Carrega o modelo uma única vez, na subida do container.
+print("Carregando modelo de remoção de fundo (u2netp)...")
+session = new_session("u2netp")
+print("Modelo pronto.")
 
-print(f"Carregando modelo de visao: ({MODELO})...", flush=True)
-classificador = pipeline("image-classification", model = MODELO)
-print("Modelo carregado!", flush=True)
 
-@app.get("/")
-def status():
-    # endpoint leve: alvo do healthcheck agora e da readnessProbe na aula 7
+@app.get("/health")
+def health():
     return {"status": "ok"}
+
 
 @app.post("/analisar")
 async def analisar_imagem(file: UploadFile = File(...)):
     conteudo = await file.read()
+    if not conteudo:
+        raise HTTPException(status_code=400, detail="Arquivo vazio.")
+
     try:
-        imagem = Image.open(io.BytesIO(conteudo)).convert("RGB")
-    except Exception:
-        raise HTTPException(status_code=415, detail="Imagem inválida")
+        Image.open(io.BytesIO(conteudo)).verify()
+    except (UnidentifiedImageError, OSError):
+        raise HTTPException(status_code=400, detail="O arquivo enviado não é uma imagem válida.")
 
-    resultados = classificador(imagem)
-    melhor = resultados[0]
-    rotulo = melhor["label"]
-    confianca = round(float(melhor["score"]), 4)
+    imagem_sem_fundo = remove(conteudo, session=session)  # bytes PNG com canal alfa
 
-    files = {"file": (file.filename, conteudo, file.content_type)}
-    data = {"rotulo": rotulo}
-    try:
-        r = requests.post(f"{ARMAZENAMENTO_URL}/salvar",
-        files = files, data = data, timeout = 60)
-        status_db = ("Salvo com sucesso" if r.status_code ==200 else f"Erro ao salvar ({r.status_code})")
-    except requests.RequestException as e:
-        status_db = "Falha na comunicacao: {e}"
+    return Response(content=imagem_sem_fundo, media_type="image/png")
 
-    return {"rotulo": rotulo, "confianca": confianca, "status_db": status_db}
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8081)

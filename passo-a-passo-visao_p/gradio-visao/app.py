@@ -1,39 +1,48 @@
-import os
-import gradio as gr 
+"""
+Frontend (gradio-visao) — interface para remoção de fundo de imagem.
+
+Envia a foto para o backend (api-visao) via REST e mostra o resultado
+(imagem com fundo removido, PNG com transparência).
+"""
+
+import io
+
+import gradio as gr
 import requests
+from PIL import Image
 
-ANALISE_URL = os.getenv("ANALISE_URL", "http://analise-service:8081")
-SERVER_PORT = int(os.getenv("VISAO_PORT", "7861"))
+API_URL = "http://api-visao:8081/analisar"
 
-def analisa_imagem(imagem_path):
+
+def remover_fundo(imagem_path):
     if imagem_path is None:
-        return "Nenhuma imagem enviada"
+        return None, "Nenhuma imagem enviada."
 
-    nome = os.path.basename(imagem_path)
     with open(imagem_path, "rb") as f:
-        files = {"file": (nome, f, "image/png")}
+        files = {"file": f}
         try:
-            r = requests.post(
-                f"{ANALISE_URL}/analisar", files=files, timeout=600
-            )
-        except requests.RequestException as e:
-            return f"Erro de conexao: {e}"
+            response = requests.post(API_URL, files=files, timeout=60)
+        except Exception as e:
+            return None, f"Erro de comunicação com o backend: {e}"
 
-    if r.status_code != 200:
-        return f"Erro no servidor: {r.status_code}"
+    if response.status_code != 200:
+        detalhe = response.text
+        return None, f"Erro no servidor ({response.status_code}): {detalhe}"
 
-    dados = r.json()
-    return (
-        f"Rotulo gerado pela IA: {dados.get('rotulo')}\n"
-        f"Confianca: {dados.get('confianca')}\n"
-        f"Armazenamento: {dados.get('status_db')}"
-    )
+    imagem_resultado = Image.open(io.BytesIO(response.content))
+    return imagem_resultado, "Fundo removido com sucesso."
+
 
 demo = gr.Interface(
-    fn= analisa_imagem,
-    inputs = gr.Image(type="filepath", label = "Envie uma imagem"),
-    outputs = gr.Textbox(label="Resultado da IA e do banco"),
+    fn=remover_fundo,
+    inputs=gr.Image(type="filepath", label="Envie uma imagem"),
+    outputs=[
+        gr.Image(type="pil", label="Imagem sem fundo", image_mode="RGBA"),
+        gr.Textbox(label="Status"),
+    ],
+    title="🖼️ Removedor de Fundo de Imagem",
+    description="Envie uma foto e o backend (rembg) remove o fundo automaticamente.",
 )
 
 if __name__ == "__main__":
-    demo.launch(server_name = "0.0.0.0", server_port = SERVER_PORT)
+    demo.launch(server_name="0.0.0.0", server_port=7861)
